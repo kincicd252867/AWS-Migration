@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for AWS Migration (MGN and DMS) from ap-southeast-1 to ap-east-1'
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+
+Resources:
+  # VPC for Hong Kong (ap-east-1) Target Environment
+  TargetVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: Target-HK-VPC
+
+  # Public Subnet in Target VPC
+  TargetPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref TargetVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs: '']
+      Tags:
+        - Key: Name
+          Value: Target-HK-PublicSubnet
+
+  # Internet Gateway for Public Access
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Target-HK-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref TargetVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref TargetVPC
+      Tags:
+        - Key: Name
+          Value: Public-RT
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref TargetPublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Group for Migration Resources (Open for simplicity - tighten in production)
+  MigrationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for DMS and MGN replication instances
+      VpcId: !Ref TargetVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0 # Restrict to your IP in production
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 0.0.0.0/0 # For MySQL/Aurora migration - restrict source IP
+
+  # IAM Role for DMS
+  DMSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dms.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  # DMS Replication Subnet Group (points to the created subnet)
+  DMSReplicationSubnetGroup:
+    Type: AWS::DMS::ReplicationSubnetGroup
+    Properties:
+      ReplicationSubnetGroupDescription: Subnet group for DMS replication instance
+      ReplicationSubnetGroupIdentifier: dms-replication-subnet-group
+      SubnetIds:
+        - !Ref TargetPublicSubnet
+
+  # DMS Replication Instance
+  DMSReplicationInstance:
+    Type: AWS::DMS::ReplicationInstance
+    Properties:
+      AllocatedStorage: 50
+      AutoMinorVersionUpgrade: true
+      AvailabilityZone: !Select [0, !GetAZs: '']
+      EngineVersion: '3.4.6'
+      MultiAZ: false
+      PubliclyAccessible: true
+      ReplicationInstanceClass: dms.t3.medium
+      ReplicationInstanceIdentifier: dms-replication-instance
+      ReplicationSubnetGroupIdentifier: !Ref DMSReplicationSubnetGroup
+      VpcSecurityGroupIds:
+        - !GetAtt MigrationSecurityGroup.GroupId
+
+  # EC2 Instance (Example Target Server in Hong Kong)
+  TargetEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0c55b159cbfafe1f0 # Amazon Linux 2 AMI (Hong Kong) - Update this ID!
+      InstanceType: t3.micro
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !GetAtt MigrationSecurityGroup.GroupId
+          SubnetId: !Ref TargetPublicSubnet
+      Tags:
+        - Key: Name
+          Value: Target-HK-EC2
+
+Outputs:
+  TargetVPCId:
+    Description: ID of the created Target VPC in Hong Kong
+    Value: !Ref TargetVPC
+  DMSReplicationInstanceArn:
+    Description: ARN of the DMS Replication Instance
+    Value: !Ref DMSReplicationInstance
+  PublicSubnetId:
+    Description: ID of the Public Subnet
+    Value: !Ref TargetPublicSubnet
+  SecurityGroupId:
+    Description: ID of the Migration Security Group
+    Value: !GetAtt MigrationSecurityGroup.GroupId
