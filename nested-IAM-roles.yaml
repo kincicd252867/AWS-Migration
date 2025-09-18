@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nested stack to create necessary IAM roles for migration
+Parameters:
+  EnvironmentName:
+    Type: String
+
+Resources:
+  DMSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-dms-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dms.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-dms-role'
+
+  MGNServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-mgn-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: drm.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSApplicationMigrationReplicationServerPolicy
+        - arn:aws:iam::aws:policy/service-role/AWSApplicationMigrationAgentPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-mgn-role'
+
+Outputs:
+  DMSRoleArn:
+    Description: ARN of the DMS Role
+    Value: !GetAtt DMSRole.Arn
+  MGNRoleArn:
+    Description: ARN of the MGN Role
+    Value: !GetAtt MGNServiceRole.Arn

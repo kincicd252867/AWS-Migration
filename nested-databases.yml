@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nested stack to create the target RDS database instance for migration
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: An environment name that will be prefixed to resources
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC ID where the database will be deployed
+  DBSubnetGroupName:
+    Type: String
+    Description: The name of the DB Subnet Group (from the Network stack)
+  DBSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: The Security Group ID for the database (from the Security Groups stack)
+  DBMasterUserPassword:
+    Description: 'The master password for the RDS database. Must be at least 8 characters.'
+    Type: String
+    MinLength: 8
+    NoEcho: true # Prevents the password from being displayed in logs
+  DBMasterUsername:
+    Description: 'The master username for the RDS database.'
+    Type: String
+    Default: 'admin' 
+    MinLength: 1
+
+Resources:
+  # Target DB Instance (Destination for DMS)
+  TargetDBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot # Important: Snapshots the DB before deletion to prevent data loss
+    Properties:
+      AllocatedStorage: 20
+      DBInstanceClass: db.t3.micro
+      Engine: mysql
+      EngineVersion: "8.0"
+      DBInstanceIdentifier: !Sub '${EnvironmentName}-target'
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterUserPassword
+      # Associate with the DB Subnet Group created in the Network stack
+      DBSubnetGroupName: !Ref DBSubnetGroupName
+      # Associate with the Security Group created in the Security Groups stack
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroupId
+      # Publicly accessible for easier demo/testing. Set to 'false' for production.
+      PubliclyAccessible: true
+      # Backup retention period (set to 0 for demo to save costs, use >0 for production)
+      BackupRetentionPeriod: 0
+      MultiAZ: false
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+Outputs:
+  TargetDBEndpoint:
+    Description: The connection endpoint for the target database
+    Value: !GetAtt TargetDBInstance.Endpoint.Address
+  TargetDBPort:
+    Description: The port number for the target database
+    Value: !GetAtt TargetDBInstance.Endpoint.Port
+  TargetDBId:
+    Description: The identifier for the target RDS instance
+    Value: !Ref TargetDBInstance

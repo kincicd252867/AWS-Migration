@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Master Template for HK Migration Project using Nested Stacks
+Parameters:
+  EnvironmentName:
+    Description: 'An environment name that will be prefixed to resources'
+    Type: String
+    Default: 'migration-target'
+  SourceRegion:
+    Description: 'The source region for the migration (e.g., ap-southeast-1)'
+    Type: String
+    Default: 'ap-southeast-1'
+  KeyName:
+    Description: 'Name of an existing EC2 KeyPair for SSH access'
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: 'Must be the name of an existing EC2 KeyPair.'
+  DBMasterUserPassword:
+    Description: 'The master password for the RDS database. Must be at least 8 characters.'
+    Type: String
+    MinLength: 8
+    NoEcho: true # Prevents the password from being displayed in logs
+    ConstraintDescription: 'Password must be at least 8 characters long.'
+  DBMasterUsername:
+    Description: 'The master username for the RDS database.'
+    Type: String
+    Default: 'admin' 
+    MinLength: 1
+    ConstraintDescription: 'Username must not be empty.'
+  SourceDatabaseName:
+    Description: 'Name of the source database in Singapore region'
+    Type: String
+  SourceServerName:
+    Description: 'Hostname/IP of the source database in Singapore region'
+    Type: String
+  SourceUsername:
+    Description: 'Username for the source database in Singapore region'
+    Type: String
+  SourcePassword:
+    Description: 'Password for the source database in Singapore region'
+    Type: String
+    NoEcho: true
+
+Resources:
+  # Deploy the VPC Network First
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/my-cf-templates/migration-project/nested-vpc-network.yaml
+      Parameters:
+        EnvironmentName: !Sub '${EnvironmentName}-network'
+
+  # Deploy Security Groups - Needs VPC ID from NetworkStack
+  SecurityGroupStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: NetworkStack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/my-cf-templates/migration-project/nested-security-groups.yaml
+      Parameters:
+        EnvironmentName: !Sub '${EnvironmentName}-sg'
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+
+  # Deploy IAM Roles
+  IAMStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/my-cf-templates/migration-project/nested-iam-roles.yaml
+      Parameters:
+        EnvironmentName: !Sub '${EnvironmentName}-iam'
+
+  # Deploy Storage (S3), Needs IAM roles for policies
+  StorageStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: IAMStack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/my-cf-templates/migration-project/nested-storage.yaml
+      Parameters:
+        EnvironmentName: !Sub '${EnvironmentName}-storage'
+        TargetBucketName: !Sub '${EnvironmentName}-data-${AWS::AccountId}' # Unique bucket name
+
+  # Deploy Target Database - Needs Network and Security Groups
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkStack
+      - SecurityGroupStack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/my-cf-templates/migration-project/nested-databases.yaml
+      Parameters:
+        EnvironmentName: !Sub '${EnvironmentName}-db'
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        DBMasterUserPassword: !Ref DBMasterUserPassword
+        DBMasterUsername: "admin"
+        DBSubnetGroupName: !GetAtt NetworkStack.Outputs.DBSubnetGroupName
+        DBSecurityGroupId: !GetAtt SecurityGroupStack.Outputs.DBSecurityGroupId
+
+  # Deploy DMS Resources - Needs Network, Security Groups, and Database
+  DMSStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - NetworkStack
+      - SecurityGroupStack
+      - DatabaseStack
+    Properties:
+      TemplateURL: https://s3.amazonaws.com/my-cf-templates/migration-project/nested-dms.yaml
+      Parameters:
+        EnvironmentName: !Sub '${EnvironmentName}-dms'
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        ReplicationSubnetGroupName: !Sub '${EnvironmentName}-dms-subnet-group'
+        ReplicationInstanceClass: dms.t3.medium
+        SourceEndpointIdentifier: !Sub '${EnvironmentName}-source-endpoint'
+        TargetEndpointIdentifier: !Sub '${EnvironmentName}-target-endpoint'
+        SourceDatabaseName: source_db_name 
+        SourceServerName: your-source-db-hostname 
+        SourceUsername: source_db_username 
+        SourcePassword: source_db_password 
+        TargetDatabaseName: !GetAtt DatabaseStack.Outputs.TargetDBId
+        TargetServerName: !GetAtt DatabaseStack.Outputs.TargetDBEndpoint
+        TargetUsername: !Ref DBMasterUsername
+        TargetPassword: !Ref DBMasterUserPassword
+        MigrationType: full-load 
+
+Outputs:
+  VpcId:
+    Description: The ID of the created VPC
+    Value: !GetAtt NetworkStack.Outputs.VpcId
+  PublicSubnetIds:
+    Description: Comma-delimited list of public subnet IDs
+    Value: !GetAtt NetworkStack.Outputs.PublicSubnetIds
+  MigrationSecurityGroupId:
+    Description: Security Group ID for migration resources
+    Value: !GetAtt SecurityGroupStack.Outputs.MigrationSecurityGroupId
+  TargetS3BucketName:
+    Description: Name of the target S3 bucket for data migration
+    Value: !GetAtt StorageStack.Outputs.TargetBucketName
+  DMSRoleArn:
+    Description: ARN of the IAM Role for DMS
+    Value: !GetAtt IAMStack.Outputs.DMSRoleArn
+  DMSReplicationInstanceArn:
+    Description: ARN of the DMS Replication Instance
+    Value: !GetAtt DMSStack.Outputs.ReplicationInstanceArn
+  DMSReplicationTaskArn:
+    Description: ARN of the DMS Replication Task
+    Value: !GetAtt DMSStack.Outputs.ReplicationTaskArn

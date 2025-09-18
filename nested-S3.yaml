@@ -1,0 +1,29 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Nested stack to create target S3 bucket
+Parameters:
+  EnvironmentName:
+    Type: String
+  TargetBucketName:
+    Type: String
+
+Resources:
+  TargetS3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Ref TargetBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+
+Outputs:
+  TargetBucketName:
+    Description: Name of the created target S3 bucket
+    Value: !Ref TargetS3Bucket
+  TargetBucketArn:
+    Description: ARN of the created target S3 bucket
+    Value: !GetAtt TargetS3Bucket.Arn
